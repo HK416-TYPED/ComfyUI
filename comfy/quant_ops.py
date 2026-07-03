@@ -69,6 +69,18 @@ if not _CK_MXFP8_AVAILABLE:
     class _CKMxfp8Layout:
         pass
 
+_CK_INT4_TENSORWISE_AVAILABLE = False
+if _CK_AVAILABLE:
+    try:
+        from comfy_kitchen.tensor import TensorWiseINT4Layout as _CKTensorWiseINT4Layout
+        _CK_INT4_TENSORWISE_AVAILABLE = True
+    except ImportError:
+        logging.warning("comfy_kitchen does not support int4_tensorwise, please update comfy_kitchen.")
+
+if not _CK_INT4_TENSORWISE_AVAILABLE:
+    class _CKTensorWiseINT4Layout:
+        pass
+
 import comfy.float
 
 # ==============================================================================
@@ -179,6 +191,7 @@ class TensorCoreFP8E5M2Layout(_TensorCoreFP8LayoutBase):
 # Backward compatibility alias - default to E4M3
 TensorCoreFP8Layout = TensorCoreFP8E4M3Layout
 TensorWiseINT8Layout = _CKTensorWiseINT8Layout
+TensorWiseINT4Layout = _CKTensorWiseINT4Layout
 
 
 # ==============================================================================
@@ -190,6 +203,8 @@ register_layout_class("TensorCoreFP8E4M3Layout", TensorCoreFP8E4M3Layout)
 register_layout_class("TensorCoreFP8E5M2Layout", TensorCoreFP8E5M2Layout)
 register_layout_class("TensorCoreNVFP4Layout", TensorCoreNVFP4Layout)
 register_layout_class("TensorWiseINT8Layout", _CKTensorWiseINT8Layout)
+if _CK_INT4_TENSORWISE_AVAILABLE:
+    register_layout_class("TensorWiseINT4Layout", _CKTensorWiseINT4Layout)
 if _CK_MXFP8_AVAILABLE:
     register_layout_class("TensorCoreMXFP8Layout", TensorCoreMXFP8Layout)
 
@@ -227,6 +242,14 @@ QUANT_ALGOS["int8_tensorwise"] = {
     "quantize_input": False,
 }
 
+if _CK_INT4_TENSORWISE_AVAILABLE:
+    QUANT_ALGOS["int4_tensorwise"] = {
+        "storage_t": torch.int8,
+        "parameters": {"weight_scale"},
+        "comfy_tensor_layout": "TensorWiseINT4Layout",
+        "quantize_input": False,
+    }
+
 
 # ==============================================================================
 # Re-exports for backward compatibility
@@ -240,6 +263,7 @@ __all__ = [
     "TensorCoreFP8E5M2Layout",
     "TensorCoreNVFP4Layout",
     "TensorWiseINT8Layout",
+    "TensorWiseINT4Layout",
     "QUANT_ALGOS",
     "register_layout_op",
 ]

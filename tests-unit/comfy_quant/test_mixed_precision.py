@@ -15,7 +15,7 @@ if not has_gpu():
     args.cpu = True
 
 from comfy import ops
-from comfy.quant_ops import QuantizedTensor
+from comfy.quant_ops import QuantizedTensor, _CK_INT4_TENSORWISE_AVAILABLE
 import comfy.utils
 
 
@@ -223,9 +223,10 @@ class TestMixedPrecisionOps(unittest.TestCase):
 
         state_dict, _ = comfy.utils.convert_old_quants(state_dict, metadata={"_quantization_metadata": json.dumps({"layers": layer_quant_config})})
 
-        # Load should raise KeyError for unknown format in QUANT_FORMAT_MIXINS
+        # Load raises ValueError for a format missing from QUANT_ALGOS (e.g. a
+        # checkpoint from a newer comfy-kitchen than the installed one).
         model = SimpleModel(operations=ops.mixed_precision_ops({}))
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             model.load_state_dict(state_dict, strict=False)
 
     def test_int8_convrot_metadata_loads_into_params(self):
@@ -279,6 +280,52 @@ class TestMixedPrecisionOps(unittest.TestCase):
             bias.to(dtype=torch.float16),
         )
         self.assertTrue(torch.equal(loaded_fp16_out, ref_fp16_out))
+
+    @unittest.skipUnless(_CK_INT4_TENSORWISE_AVAILABLE, "comfy_kitchen lacks TensorWiseINT4Layout")
+    def test_int4_tensorwise_convrot_metadata_loads_into_params(self):
+        """int4_tensorwise marker (packed [N, K/2] weight) must reach the INT4 params."""
+        torch.manual_seed(123)
+        layer_quant_config = {
+            "layer": {
+                "format": "int4_tensorwise",
+                "convrot": True,
+                "convrot_groupsize": 256,
+            }
+        }
+        weight = torch.randn(16, 256, dtype=torch.bfloat16)
+        bias = torch.randn(16, dtype=torch.bfloat16)
+        q_weight = QuantizedTensor.from_float(
+            weight,
+            "TensorWiseINT4Layout",
+            per_channel=True,
+            convrot=True,
+            convrot_groupsize=256,
+        )
+        self.assertEqual(tuple(q_weight._qdata.shape), (16, 128))  # packed 2/byte
+        state_dict = {
+            "layer.weight": q_weight._qdata,
+            "layer.bias": bias,
+            "layer.weight_scale": q_weight._params.scale,
+        }
+
+        state_dict, _ = comfy.utils.convert_old_quants(
+            state_dict,
+            metadata={"_quantization_metadata": json.dumps({"layers": layer_quant_config})},
+        )
+        model = torch.nn.Module()
+        model.layer = ops.mixed_precision_ops({}).Linear(256, 16, device="cpu", dtype=torch.bfloat16)
+        model.load_state_dict(state_dict, strict=False)
+
+        self.assertIsInstance(model.layer.weight, QuantizedTensor)
+        self.assertEqual(model.layer.weight._layout_cls, "TensorWiseINT4Layout")
+        self.assertTrue(model.layer.weight._params.convrot)
+        self.assertEqual(model.layer.weight._params.convrot_groupsize, 256)
+        self.assertEqual(tuple(model.layer.weight._params.orig_shape), (16, 256))
+
+        input_tensor = torch.randn(4, 256, dtype=torch.bfloat16)
+        loaded_out = model.layer(input_tensor)
+        ref_out = torch.nn.functional.linear(input_tensor, q_weight, bias)
+        self.assertTrue(torch.equal(loaded_out, ref_out))
 
         saved = model.state_dict()
         saved_conf = json.loads(saved["layer.comfy_quant"].numpy().tobytes())

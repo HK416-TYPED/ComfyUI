@@ -1071,7 +1071,12 @@ def _load_quantized_module(module, super_load, state_dict, prefix, local_metadat
         if module.quant_format is None:
             raise ValueError(f"Unknown quantization format for layer {layer_name}")
 
-        qconfig = QUANT_ALGOS[module.quant_format]
+        qconfig = QUANT_ALGOS.get(module.quant_format)
+        if qconfig is None:
+            raise ValueError(
+                f"Quantization format '{module.quant_format}' for layer {layer_name} is not "
+                "available in this environment (comfy-kitchen missing or too old?)"
+            )
         module.layout_type = qconfig["comfy_tensor_layout"]
         layout_cls = get_layout_class(module.layout_type)
 
@@ -1089,10 +1094,10 @@ def _load_quantized_module(module, super_load, state_dict, prefix, local_metadat
             if ts is None or bs is None:
                 raise ValueError(f"Missing NVFP4 scales for layer {layer_name}")
             scales = {"scale": ts, "block_scale": bs}
-        elif module.quant_format == "int8_tensorwise":
+        elif module.quant_format in ("int8_tensorwise", "int4_tensorwise"):
             scale = pop_scale("weight_scale")
             if scale is None:
-                raise ValueError(f"Missing INT8 weight scale for layer {layer_name}")
+                raise ValueError(f"Missing INT8/INT4 weight scale for layer {layer_name}")
             scales = {"scale": scale}
             params_conf = layer_conf.get("params", {})
             if not isinstance(params_conf, dict):
@@ -1145,7 +1150,7 @@ def _quantized_weight_state_dict(module, sd, prefix, extra_quant_conf=None, extr
         if getattr(module, '_full_precision_mm_config', False):
             quant_conf["full_precision_matrix_mult"] = True
         params = getattr(module.weight, "_params", None)
-        if module.quant_format == "int8_tensorwise" and getattr(params, "convrot", False):
+        if module.quant_format in ("int8_tensorwise", "int4_tensorwise") and getattr(params, "convrot", False):
             quant_conf["convrot"] = True
             quant_conf["convrot_groupsize"] = getattr(params, "convrot_groupsize", 256)
         if extra_quant_conf:
